@@ -34,7 +34,8 @@ config KCSAN_VERBOSE
 	  deadlocks or recursion.  If in doubt, say N.
 
 config KCSAN_DEBUG
-	bool "Debugging of KCSAN internals"
+	int "Debugging of KCSAN internals (0 = off, 1 = quiet, 2 = verbose)"
+	default 0
 
 config KCSAN_SELFTEST
 	bool "Perform short selftests on boot"

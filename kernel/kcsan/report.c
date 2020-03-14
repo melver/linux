@@ -31,6 +31,7 @@ static struct {
 	int			access_type;
 	int			task_pid;
 	int			cpu_id;
+	int			preempt_count;
 	unsigned long		stack_entries[NUM_STACK_ENTRIES];
 	int			num_stack_entries;
 
@@ -455,6 +456,9 @@ set_other_info_task_blocking(unsigned long *flags, const volatile void *ptr)
 		set_current_state(TASK_RUNNING);
 }
 
+/* Minimum prepare_report() timeout in microseconds. */
+#define PREPARE_REPORT_TIMEOUT 500000 /* 0.5s */
+
 /*
  * Depending on the report type either sets other_info and returns false, or
  * acquires the matching other_info and returns true. If other_info is not
@@ -464,6 +468,20 @@ static bool prepare_report(unsigned long *flags, const volatile void *ptr,
 			   size_t size, int access_type, int cpu_id,
 			   enum kcsan_report_type type)
 {
+	/*
+	 * Monitor forward progress, and decay retry counter adaptively. Due to
+	 * a case where interrupts (including NMIs) waiting for other_info to
+	 * become free cause deadlock (if the interrupted task is the only one
+	 * that can consume other_info), we make prepare_report() fail
+	 * gracefully.  [Note: Ideally, we'd just have a list of other_infos,
+	 * however, that itself is non-trivial due to limitations of what we can
+	 * do here (such as not being able to call into kmalloc, as this can
+	 * also deadlock).]
+	 */
+	static unsigned long progress;		/* Forward progress counter. */
+	unsigned long progress_last = progress; /* Last observed progress. */
+	int retry = PREPARE_REPORT_TIMEOUT + max(kcsan_udelay_task, kcsan_udelay_interrupt);
+
 	if (type != KCSAN_REPORT_CONSUMED_WATCHPOINT &&
 	    type != KCSAN_REPORT_RACE_SIGNAL) {
 		/* other_info not required; just acquire report_lock */
@@ -476,19 +494,25 @@ retry:
 
 	switch (type) {
 	case KCSAN_REPORT_CONSUMED_WATCHPOINT:
-		if (other_info.ptr != NULL)
-			break; /* still in use, retry */
+		if (!retry) {
+			WARN(CONFIG_KCSAN_DEBUG,
+			     "KCSAN: %s: stalled consumer?", __func__);
+		} else if (other_info.ptr)
+			/* Still in use and retry limit not reached; retry. */
+			break;
 
 		other_info.ptr			= ptr;
 		other_info.size			= size;
 		other_info.access_type		= access_type;
 		other_info.task_pid		= in_task() ? task_pid_nr(current) : -1;
 		other_info.cpu_id		= cpu_id;
+		other_info.preempt_count	= preempt_count();
 		other_info.num_stack_entries	= stack_trace_save(other_info.stack_entries, NUM_STACK_ENTRIES, 1);
 
 		if (IS_ENABLED(CONFIG_KCSAN_VERBOSE))
 			set_other_info_task_blocking(flags, ptr);
 
+		progress++;
 		spin_unlock_irqrestore(&report_lock, *flags);
 
 		/*
@@ -498,8 +522,15 @@ retry:
 		return false;
 
 	case KCSAN_REPORT_RACE_SIGNAL:
-		if (other_info.ptr == NULL)
-			break; /* no data available yet, retry */
+		if (!retry) {
+			WARN(CONFIG_KCSAN_DEBUG,
+			     "KCSAN: %s: stalled producer?", __func__);
+			/* Release potentially never-matching @other_info. */
+			release_report(flags, KCSAN_REPORT_RACE_SIGNAL);
+			return false;
+		} else if (!other_info.ptr)
+			/* No data available yet; retry. */
+			break;
 
 		/*
 		 * First check if this is the other_info we are expecting, i.e.
@@ -511,6 +542,23 @@ retry:
 				     (unsigned long)ptr & WATCHPOINT_ADDR_MASK,
 				     size))
 			break; /* mismatching watchpoint, retry */
+
+		if ((in_task() && other_info.task_pid > 0 && /* both tasks, or */
+		     task_pid_nr(current) == other_info.task_pid) ||
+		    (!in_task() && other_info.task_pid == -1 && /* both interrupts. */
+		     cpu_id == other_info.cpu_id && preempt_count() == other_info.preempt_count))
+			/*
+			 * This can happen if there are multiple concurrent
+			 * races on the same memory location. Assume that the
+			 * current thread found a watchpoint, consumed it, and
+			 * populated @other_info, but then continues execution
+			 * and sets up a watchpoint for the same memory
+			 * location, which is immedately consumed by another
+			 * thread. If the earlier racing thread is interrupted
+			 * or otherwise delayed, we could find @other_info that
+			 * this thread itself set earlier and consume it.
+			 */
+			break; /* retry */
 
 		if (!matching_access((unsigned long)other_info.ptr,
 				     other_info.size, (unsigned long)ptr,
@@ -565,19 +613,22 @@ retry:
 			return false;
 		}
 
-		/*
-		 * Matching & usable access in other_info: keep other_info_lock
-		 * locked, as this thread consumes it to print the full report;
-		 * unlocked in release_report.
-		 */
+		/* Matching access in other_info. */
 		return true;
 
 	default:
 		BUG();
 	}
 
+	/* Decay if no forward progress was detected. */
+	retry += progress == progress_last ? -1 : 1;
+	progress_last = progress;
 	spin_unlock_irqrestore(&report_lock, *flags);
-
+	/*
+	 * We cannot call schedule() since we also cannot reliably determine if
+	 * sleeping here is permitted -- see in_atomic().
+	 */
+	udelay(1);
 	goto retry;
 }
 
