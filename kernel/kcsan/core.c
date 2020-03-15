@@ -363,7 +363,7 @@ kcsan_setup_watchpoint(const volatile void *ptr, size_t size, int type)
 	 */
 	reset_kcsan_skip();
 
-	if (!kcsan_is_enabled())
+	if (!kcsan_is_enabled() || current->kcsan_disable_watchpoint)
 		goto out;
 
 	/*
@@ -383,6 +383,14 @@ kcsan_setup_watchpoint(const volatile void *ptr, size_t size, int type)
 	if (!kcsan_interrupt_watcher)
 		/* Use raw to avoid lockdep recursion via IRQ flags tracing. */
 		raw_local_irq_save(irq_flags);
+
+	/*
+	 * Do not set up another watchpoint in interrupts (more likely if
+	 * kcsan_interrupt_watcher is true but can also occur due to NMIs).
+	 */
+	current->kcsan_disable_watchpoint++;
+	/* Ensure write to disable watchpoints is before insert_watchpoint. */
+	barrier();
 
 	watchpoint = insert_watchpoint((unsigned long)ptr, size, is_write);
 	if (watchpoint == NULL) {
@@ -517,6 +525,8 @@ kcsan_setup_watchpoint(const volatile void *ptr, size_t size, int type)
 
 	kcsan_counter_dec(KCSAN_COUNTER_USED_WATCHPOINTS);
 out_unlock:
+	barrier();
+	current->kcsan_disable_watchpoint--;
 	if (!kcsan_interrupt_watcher)
 		raw_local_irq_restore(irq_flags);
 out:

@@ -1182,6 +1182,9 @@ struct task_struct {
 #endif
 #ifdef CONFIG_KCSAN
 	struct kcsan_ctx		kcsan_ctx;
+
+	/* Disable setting up additional watchpoints: */
+	int				kcsan_disable_watchpoint;
 #endif
 
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER

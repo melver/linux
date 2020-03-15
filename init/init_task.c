@@ -169,6 +169,7 @@ struct task_struct init_task
 		.in_flat_atomic		= false,
 		.access_mask		= 0,
 	},
+	.kcsan_disable_watchpoint = 0,
 #endif
 #ifdef CONFIG_TRACE_IRQFLAGS
 	.softirqs_enabled = 1,
