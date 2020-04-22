@@ -790,6 +790,49 @@ void __tsan_write_range(void *ptr, size_t size)
 EXPORT_SYMBOL(__tsan_write_range);
 
 /*
+ * While the use of explicit volatile is generally disallowed [1], volatile can
+ * still be found in a couple locations in concurrent contexts. Therefore, we
+ * will treat aligned volatile accesses as if they were atomic to avoid false
+ * positives in these locations.
+ *
+ * Not all compilers support emitting instrumentation for volatile accesses. To
+ * support older compilers without this support, also add known volatile globals
+ * to the list in "atomic.h"!
+ *
+ * [1] https://lwn.net/Articles/233479/
+ */
+#define DEFINE_TSAN_VOLATILE_READ_WRITE(size)                                  \
+	void __tsan_volatile_read##size(void *ptr)                             \
+	{                                                                      \
+		check_access(ptr, size,                                        \
+			     IS_ALIGNED((unsigned long)ptr, size) ?            \
+				     KCSAN_ACCESS_ATOMIC :                     \
+				     0);                                       \
+	}                                                                      \
+	EXPORT_SYMBOL(__tsan_volatile_read##size);                             \
+	void __tsan_unaligned_volatile_read##size(void *ptr)                   \
+		__alias(__tsan_volatile_read##size);                           \
+	EXPORT_SYMBOL(__tsan_unaligned_volatile_read##size);                   \
+	void __tsan_volatile_write##size(void *ptr)                            \
+	{                                                                      \
+		check_access(ptr, size,                                        \
+			     KCSAN_ACCESS_WRITE |                              \
+				     (IS_ALIGNED((unsigned long)ptr, size) ?   \
+					      KCSAN_ACCESS_ATOMIC :            \
+					      0));                             \
+	}                                                                      \
+	EXPORT_SYMBOL(__tsan_volatile_write##size);                            \
+	void __tsan_unaligned_volatile_write##size(void *ptr)                  \
+		__alias(__tsan_volatile_write##size);                          \
+	EXPORT_SYMBOL(__tsan_unaligned_volatile_write##size)
+
+DEFINE_TSAN_VOLATILE_READ_WRITE(1);
+DEFINE_TSAN_VOLATILE_READ_WRITE(2);
+DEFINE_TSAN_VOLATILE_READ_WRITE(4);
+DEFINE_TSAN_VOLATILE_READ_WRITE(8);
+DEFINE_TSAN_VOLATILE_READ_WRITE(16);
+
+/*
  * The below are not required by KCSAN, but can still be emitted by the
  * compiler.
  */
