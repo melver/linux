@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 ifdef CONFIG_KCSAN
 
-CFLAGS_KCSAN := -fsanitize=thread
+cc-param = $(call cc-option, -mllvm -$(1), $(call cc-option, --param $(1)))
+
+CFLAGS_KCSAN := -fsanitize=thread \
+	$(call cc-param,tsan-distinguish-volatile=1)
 
 endif # CONFIG_KCSAN
