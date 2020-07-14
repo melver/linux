@@ -7,19 +7,13 @@
 #include <linux/compiler_attributes.h>
 #include <linux/types.h>
 
-/*
- * ACCESS TYPE MODIFIERS
- *
- *   <none>: normal read access;
- *   WRITE : write access;
- *   ATOMIC: access is atomic;
- *   ASSERT: access is not a regular access, but an assertion;
- *   SCOPED: access is a scoped access;
- */
-#define KCSAN_ACCESS_WRITE  0x1
-#define KCSAN_ACCESS_ATOMIC 0x2
-#define KCSAN_ACCESS_ASSERT 0x4
-#define KCSAN_ACCESS_SCOPED 0x8
+/* Access types -- if KCSAN_ACCESS_WRITE is not set, the access is a read. */
+#define KCSAN_ACCESS_WRITE    (1 << 0) /* Access is a write. */
+#define KCSAN_ACCESS_COMPOUND (1 << 1) /* Compounded read-write instrumentation. */
+#define KCSAN_ACCESS_ATOMIC   (1 << 2) /* Access is atomic. */
+/* The following are special KCSAN types (non C language accesses). */
+#define KCSAN_ACCESS_ASSERT   (1 << 3) /* Access is an assertion. */
+#define KCSAN_ACCESS_SCOPED   (1 << 4) /* Access is a scoped access. */
 
 /*
  * __kcsan_*: Always calls into the runtime when KCSAN is enabled. This may be used
