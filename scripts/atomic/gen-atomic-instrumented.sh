@@ -5,9 +5,10 @@ ATOMICDIR=$(dirname $0)
 
 . ${ATOMICDIR}/atomic-tbl.sh
 
-#gen_param_check(arg)
+#gen_param_check(meta, arg)
 gen_param_check()
 {
+	local meta="$1"; shift
 	local arg="$1"; shift
 	local type="${arg%%:*}"
 	local name="$(gen_param_name "${arg}")"
@@ -17,17 +18,24 @@ gen_param_check()
 	i) return;;
 	esac
 
-	# We don't write to constant parameters
-	[ ${type#c} != ${type} ] && rw="read"
+	if [ ${type#c} != ${type} ]; then
+		# We don't write to constant parameters
+		rw="read"
+	elif [ "${meta}" != "s" ]; then
+		# Atomic RMW
+		rw="read_write"
+	fi
 
 	printf "\tinstrument_atomic_${rw}(${name}, sizeof(*${name}));\n"
 }
 
-#gen_param_check(arg...)
+#gen_params_checks(meta, arg...)
 gen_params_checks()
 {
+	local meta="$1"; shift
+
 	while [ "$#" -gt 0 ]; do
-		gen_param_check "$1"
+		gen_param_check "$meta" "$1"
 		shift;
 	done
 }
@@ -77,7 +85,7 @@ gen_proto_order_variant()
 
 	local ret="$(gen_ret_type "${meta}" "${int}")"
 	local params="$(gen_params "${int}" "${atomic}" "$@")"
-	local checks="$(gen_params_checks "$@")"
+	local checks="$(gen_params_checks "${meta}" "$@")"
 	local args="$(gen_args "$@")"
 	local retstmt="$(gen_ret_stmt "${meta}")"
 
