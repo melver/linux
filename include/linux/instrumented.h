@@ -13,9 +13,9 @@
 #include <linux/types.h>
 
 /**
- * instrument_read - instrument regular read access
+ * instrument_read - instrument plain read access
  *
- * Instrument a regular read access. The instrumentation should be inserted
+ * Instrument a plain read access. The instrumentation should be inserted
  * before the actual read happens.
  *
  * @ptr address of access
@@ -28,9 +28,9 @@ static __always_inline void instrument_read(const volatile void *v, size_t size)
 }
 
 /**
- * instrument_write - instrument regular write access
+ * instrument_write - instrument plain write access
  *
- * Instrument a regular write access. The instrumentation should be inserted
+ * Instrument a plain write access. The instrumentation should be inserted
  * before the actual write happens.
  *
  * @ptr address of access
@@ -40,6 +40,21 @@ static __always_inline void instrument_write(const volatile void *v, size_t size
 {
 	kasan_check_write(v, size);
 	kcsan_check_write(v, size);
+}
+
+/**
+ * instrument_read_write - instrument plain read-write access
+ *
+ * Instrument a plain write access. The instrumentation should be inserted
+ * before the actual write happens.
+ *
+ * @ptr address of access
+ * @size size of access
+ */
+static __always_inline void instrument_read_write(const volatile void *v, size_t size)
+{
+	kasan_check_write(v, size);
+	kcsan_check_read_write(v, size);
 }
 
 /**
@@ -70,6 +85,21 @@ static __always_inline void instrument_atomic_write(const volatile void *v, size
 {
 	kasan_check_write(v, size);
 	kcsan_check_atomic_write(v, size);
+}
+
+/**
+ * instrument_atomic_read_write - instrument atomic read-write access
+ *
+ * Instrument an atomic read-write access. The instrumentation should be
+ * inserted before the actual write happens.
+ *
+ * @ptr address of access
+ * @size size of access
+ */
+static __always_inline void instrument_atomic_read_write(const volatile void *v, size_t size)
+{
+	kasan_check_write(v, size);
+	kcsan_check_atomic_read_write(v, size);
 }
 
 /**
