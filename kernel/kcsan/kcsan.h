@@ -25,9 +25,8 @@ extern unsigned int kcsan_udelay_interrupt;
 extern bool kcsan_enabled;
 
 /*
- * Save/restore IRQ flags state trace dirtied by KCSAN.
+ * Restore IRQ flags state trace dirtied by KCSAN.
  */
-void kcsan_save_irqtrace(struct task_struct *task);
 void kcsan_restore_irqtrace(struct task_struct *task);
 
 /*

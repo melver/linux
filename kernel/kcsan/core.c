@@ -297,18 +297,68 @@ static inline unsigned int get_delay(int type)
 				0);
 }
 
-void kcsan_save_irqtrace(struct task_struct *task)
-{
-#ifdef CONFIG_TRACE_IRQFLAGS
-	task->kcsan_save_irqtrace = task->irqtrace;
-#endif
-}
+/*
+ * KCSAN instrumentation is everywhere, which means we must treat the hooks
+ * NMI-like for interrupt tracing. In order to present a 'normal' as possible
+ * context to the code called by KCSAN when reporting errors we need to update
+ * the IRQ-tracing state.
+ *
+ * Save and restore the IRQ state trace touched by KCSAN, since KCSAN's
+ * runtime is entered for every memory access, and potentially useful
+ * information is lost if dirtied by KCSAN.
+ */
 
+struct kcsan_irq_state {
+	unsigned long		flags;
+#ifdef CONFIG_TRACE_IRQFLAGS
+	int			hardirqs_enabled;
+#endif
+};
+
+/*
+ * This is also called by the reporting task for the other task, to generate the
+ * right report with CONFIG_KCSAN_VERBOSE. No harm in restoring more than once.
+ */
 void kcsan_restore_irqtrace(struct task_struct *task)
 {
 #ifdef CONFIG_TRACE_IRQFLAGS
 	task->irqtrace = task->kcsan_save_irqtrace;
 #endif
+}
+
+/*
+ * Saves/restores IRQ state (see comment above). Need noinline to work around
+ * unfortunate code-gen upon inlining, resulting in objtool getting confused as
+ * well as losing stack trace information.
+ */
+static noinline void kcsan_irq_save(struct kcsan_irq_state *irq_state)
+{
+#ifdef CONFIG_TRACE_IRQFLAGS
+	current->kcsan_save_irqtrace = current->irqtrace;
+	irq_state->hardirqs_enabled = lockdep_hardirqs_enabled();
+#endif
+	if (!kcsan_interrupt_watcher) {
+		kcsan_disable_current(); /* Lockdep might WARN, etc. */
+		raw_local_irq_save(irq_state->flags);
+		lockdep_hardirqs_off(_RET_IP_);
+		kcsan_enable_current();
+	}
+}
+
+static noinline void kcsan_irq_restore(struct kcsan_irq_state *irq_state)
+{
+	if (!kcsan_interrupt_watcher) {
+		kcsan_disable_current(); /* Lockdep might WARN, etc. */
+#ifdef CONFIG_TRACE_IRQFLAGS
+		if (irq_state->hardirqs_enabled) {
+			lockdep_hardirqs_on_prepare(_RET_IP_);
+			lockdep_hardirqs_on(_RET_IP_);
+		}
+#endif
+		raw_local_irq_restore(irq_state->flags);
+		kcsan_enable_current();
+	}
+	kcsan_restore_irqtrace(current);
 }
 
 /*
@@ -356,11 +406,13 @@ static noinline void kcsan_found_watchpoint(const volatile void *ptr,
 	flags = user_access_save();
 
 	if (consumed) {
-		kcsan_save_irqtrace(current);
+		struct kcsan_irq_state irqstate;
+
+		kcsan_irq_save(&irqstate);
 		kcsan_report(ptr, size, type, KCSAN_VALUE_CHANGE_MAYBE,
 			     KCSAN_REPORT_CONSUMED_WATCHPOINT,
 			     watchpoint - watchpoints);
-		kcsan_restore_irqtrace(current);
+		kcsan_irq_restore(&irqstate);
 	} else {
 		/*
 		 * The other thread may not print any diagnostics, as it has
@@ -393,7 +445,7 @@ kcsan_setup_watchpoint(const volatile void *ptr, size_t size, int type)
 	unsigned long access_mask;
 	enum kcsan_value_change value_change = KCSAN_VALUE_CHANGE_MAYBE;
 	unsigned long ua_flags = user_access_save();
-	unsigned long irq_flags = 0;
+	struct kcsan_irq_state irqstate;
 
 	/*
 	 * Always reset kcsan_skip counter in slow-path to avoid underflow; see
@@ -418,14 +470,7 @@ kcsan_setup_watchpoint(const volatile void *ptr, size_t size, int type)
 		goto out;
 	}
 
-	/*
-	 * Save and restore the IRQ state trace touched by KCSAN, since KCSAN's
-	 * runtime is entered for every memory access, and potentially useful
-	 * information is lost if dirtied by KCSAN.
-	 */
-	kcsan_save_irqtrace(current);
-	if (!kcsan_interrupt_watcher)
-		local_irq_save(irq_flags);
+	kcsan_irq_save(&irqstate);
 
 	watchpoint = insert_watchpoint((unsigned long)ptr, size, is_write);
 	if (watchpoint == NULL) {
@@ -565,9 +610,7 @@ kcsan_setup_watchpoint(const volatile void *ptr, size_t size, int type)
 	remove_watchpoint(watchpoint);
 	atomic_long_dec(&kcsan_counters[KCSAN_COUNTER_USED_WATCHPOINTS]);
 out_unlock:
-	if (!kcsan_interrupt_watcher)
-		local_irq_restore(irq_flags);
-	kcsan_restore_irqtrace(current);
+	kcsan_irq_restore(&irqstate);
 out:
 	user_access_restore(ua_flags);
 }
