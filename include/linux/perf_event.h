@@ -778,6 +778,9 @@ struct perf_event {
 	void *security;
 #endif
 	struct list_head		sb_list;
+
+	/* Address associated with event, which can be passed to siginfo_t. */
+	u64				sig_addr;
 #endif /* CONFIG_PERF_EVENTS */
 };
 
