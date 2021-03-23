@@ -360,6 +360,11 @@ static struct test generic_tests[] = {
 		.is_supported = test__tsc_is_supported,
 	},
 	{
+		.desc = "Sigtrap support",
+		.func = test__sigtrap,
+		.is_supported = test__wp_is_supported, /* uses wp for test */
+	},
+	{
 		.func = NULL,
 	},
 };
