@@ -19,8 +19,9 @@
  * address to metadata indices; effectively, the very first page serves as an
  * extended guard page, but otherwise has no special purpose.
  */
-#define KFENCE_POOL_SIZE ((CONFIG_KFENCE_NUM_OBJECTS + 1) * 2 * PAGE_SIZE)
+#define KFENCE_POOL_SIZE_MAX ((CONFIG_KFENCE_NUM_OBJECTS + 1) * 2 * PAGE_SIZE)
 extern char *__kfence_pool;
+extern unsigned long __kfence_num_objects;
 
 #ifdef CONFIG_KFENCE_STATIC_KEYS
 #include <linux/static_key.h>
@@ -29,6 +30,11 @@ DECLARE_STATIC_KEY_FALSE(kfence_allocation_key);
 #include <linux/atomic.h>
 extern atomic_t kfence_allocation_gate;
 #endif
+
+static __always_inline unsigned long __kfence_pool_size(void)
+{
+	return (__kfence_num_objects + 1) * 2 * PAGE_SIZE;
+}
 
 /**
  * is_kfence_address() - check if an address belongs to KFENCE pool
@@ -44,17 +50,19 @@ extern atomic_t kfence_allocation_gate;
  * an object requires specific handling.
  *
  * Note: This function may be used in fast-paths, and is performance critical.
- * Future changes should take this into account; for instance, we want to avoid
- * introducing another load and therefore need to keep KFENCE_POOL_SIZE a
- * constant (until immediate patching support is added to the kernel).
  */
 static __always_inline bool is_kfence_address(const void *addr)
 {
+	unsigned long offset = (unsigned long)((char *)addr - __kfence_pool);
+
 	/*
-	 * The non-NULL check is required in case the __kfence_pool pointer was
-	 * never initialized; keep it in the slow-path after the range-check.
+	 * First check against the constant KFENCE_POOL_SIZE_MAX, to avoid the
+	 * load to __kfence_num_objects in the common case. The non-NULL check
+	 * is required in case the __kfence_pool pointer was never initialized;
+	 * keep it in the slow-path after the range-check.
 	 */
-	return unlikely((unsigned long)((char *)addr - __kfence_pool) < KFENCE_POOL_SIZE && addr);
+	return unlikely(offset < KFENCE_POOL_SIZE_MAX &&
+			offset < __kfence_pool_size() && addr);
 }
 
 /**

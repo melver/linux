@@ -609,7 +609,7 @@ static void test_gfpzero(struct kunit *test)
 			break;
 		test_free(buf2);
 
-		if (i == CONFIG_KFENCE_NUM_OBJECTS) {
+		if (i == __kfence_num_objects) {
 			kunit_warn(test, "giving up ... cannot get same object back\n");
 			return;
 		}
