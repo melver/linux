@@ -16,6 +16,7 @@
 #define pr_fmt(fmt) "kcsan_test: " fmt
 
 #include <kunit/test.h>
+#include <linux/atomic.h>
 #include <linux/jiffies.h>
 #include <linux/kcsan-checks.h>
 #include <linux/kernel.h>
@@ -305,6 +306,16 @@ static DEFINE_SEQLOCK(test_seqlock);
 __no_kcsan
 static noinline void sink_value(long v) { WRITE_ONCE(test_sink, v); }
 
+/*
+ * Generates a delay and some accesses that enter the runtime but do not produce
+ * data races.
+ */
+static noinline void test_delay(int iter)
+{
+	while (iter--)
+		sink_value(READ_ONCE(test_sink));
+}
+
 static noinline void test_kernel_read(void) { sink_value(test_var); }
 
 static noinline void test_kernel_write(void)
@@ -466,7 +477,158 @@ static noinline void test_kernel_xor_1bit(void)
 	kcsan_nestable_atomic_end();
 }
 
+#define TEST_KERNEL_LOCKED(name, acquire, release)		\
+	static noinline void test_kernel_##name(void)		\
+	{							\
+		long *flag = &test_struct.val[0];		\
+		long v = 0;					\
+		if (!(acquire))					\
+			return;					\
+		while (v++ < 100) {				\
+			test_var++;				\
+			barrier();				\
+		}						\
+		release;					\
+		test_delay(100);				\
+	}
+
+TEST_KERNEL_LOCKED(with_memorder,
+		   cmpxchg_acquire(flag, 0, 1) == 0,
+		   smp_store_release(flag, 0));
+TEST_KERNEL_LOCKED(wrong_memorder,
+		   cmpxchg_relaxed(flag, 0, 1) == 0,
+		   WRITE_ONCE(*flag, 0));
+TEST_KERNEL_LOCKED(atomic_builtin_with_memorder,
+		   __atomic_compare_exchange_n(flag, &v, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED),
+		   __atomic_store_n(flag, 0, __ATOMIC_RELEASE));
+TEST_KERNEL_LOCKED(atomic_builtin_wrong_memorder,
+		   __atomic_compare_exchange_n(flag, &v, 1, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED),
+		   __atomic_store_n(flag, 0, __ATOMIC_RELAXED));
+
 /* ===== Test cases ===== */
+
+/*
+ * Tests that various barriers have the expected effect on internal state.
+ * Not exhaustive on atomic_t operations.
+ */
+__no_kcsan
+static void test_barrier_nothreads(struct kunit *test)
+{
+#ifdef CONFIG_KCSAN_STRICT
+	struct kcsan_scoped_access *reorder_access = &current->kcsan_ctx.reorder_access;
+#else
+	struct kcsan_scoped_access *reorder_access = NULL;
+#endif
+	atomic_t dummy;
+
+	if (!reorder_access)
+		kunit_skip(test, "Test requires: CONFIG_KCSAN_STRICT");
+
+	/* Force creating a valid entry in reorder_access first. */
+	test_var = 0;
+	while (test_var++ < 1000000 && reorder_access->size != sizeof(test_var))
+		__kcsan_check_read(&test_var, sizeof(test_var));
+	KUNIT_ASSERT_EQ(test, reorder_access->size, sizeof(test_var));
+
+#define KCSAN_EXPECT_BARRIER(access_type, barrier, expect_order_before)				\
+	do {											\
+		reorder_access->type = (access_type) | KCSAN_ACCESS_SCOPED;			\
+		reorder_access->size = sizeof(test_var);					\
+		barrier;									\
+		KUNIT_EXPECT_EQ_MSG(test, reorder_access->size,					\
+				    expect_order_before ? 0 : sizeof(test_var),			\
+				    "Improperly instrumented (" #access_type "): " #barrier);	\
+	} while (0)
+
+	/* read */
+	KCSAN_EXPECT_BARRIER(0, smp_mb(), true);
+	KCSAN_EXPECT_BARRIER(0, smp_wmb(), false);
+	KCSAN_EXPECT_BARRIER(0, smp_rmb(), true);
+	KCSAN_EXPECT_BARRIER(0, smp_mb__before_atomic(), true);
+	KCSAN_EXPECT_BARRIER(0, smp_mb__after_atomic(), true);
+	KCSAN_EXPECT_BARRIER(0, smp_store_mb(test_sink, 0), true);
+	KCSAN_EXPECT_BARRIER(0, smp_load_acquire(&test_sink), false);
+	KCSAN_EXPECT_BARRIER(0, smp_store_release(&test_sink, 0), true);
+	KCSAN_EXPECT_BARRIER(0, xchg(&test_sink, 0), true);
+	KCSAN_EXPECT_BARRIER(0, xchg_release(&test_sink, 0), true);
+	KCSAN_EXPECT_BARRIER(0, xchg_relaxed(&test_sink, 0), false);
+	KCSAN_EXPECT_BARRIER(0, cmpxchg(&test_sink, 0,  0), true);
+	KCSAN_EXPECT_BARRIER(0, cmpxchg_release(&test_sink, 0,  0), true);
+	KCSAN_EXPECT_BARRIER(0, cmpxchg_relaxed(&test_sink, 0,  0), false);
+	KCSAN_EXPECT_BARRIER(0, atomic_read(&dummy), false);
+	KCSAN_EXPECT_BARRIER(0, atomic_read_acquire(&dummy), false);
+	KCSAN_EXPECT_BARRIER(0, atomic_set(&dummy, 0), false);
+	KCSAN_EXPECT_BARRIER(0, atomic_set_release(&dummy, 0), true);
+	KCSAN_EXPECT_BARRIER(0, atomic_add(1, &dummy), false);
+	KCSAN_EXPECT_BARRIER(0, atomic_add_return(1, &dummy), true);
+	KCSAN_EXPECT_BARRIER(0, atomic_add_return_acquire(1, &dummy), false);
+	KCSAN_EXPECT_BARRIER(0, atomic_add_return_release(1, &dummy), true);
+	KCSAN_EXPECT_BARRIER(0, atomic_add_return_relaxed(1, &dummy), false);
+	KCSAN_EXPECT_BARRIER(0, atomic_fetch_add(1, &dummy), true);
+	KCSAN_EXPECT_BARRIER(0, atomic_fetch_add_acquire(1, &dummy), false);
+	KCSAN_EXPECT_BARRIER(0, atomic_fetch_add_release(1, &dummy), true);
+	KCSAN_EXPECT_BARRIER(0, atomic_fetch_add_relaxed(1, &dummy), false);
+
+	/* write */
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, smp_mb(), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, smp_wmb(), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, smp_rmb(), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, smp_mb__before_atomic(), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, smp_mb__after_atomic(), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, smp_store_mb(test_sink, 0), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, smp_load_acquire(&test_sink), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, smp_store_release(&test_sink, 0), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, xchg(&test_sink, 0), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, xchg_release(&test_sink, 0), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, xchg_relaxed(&test_sink, 0), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, cmpxchg(&test_sink, 0,  0), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, cmpxchg_release(&test_sink, 0,  0), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, cmpxchg_relaxed(&test_sink, 0,  0), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, atomic_read(&dummy), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, atomic_read_acquire(&dummy), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, atomic_set(&dummy, 0), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, atomic_set_release(&dummy, 0), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, atomic_add(1, &dummy), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, atomic_add_return(1, &dummy), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, atomic_add_return_acquire(1, &dummy), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, atomic_add_return_release(1, &dummy), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, atomic_add_return_relaxed(1, &dummy), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, atomic_fetch_add(1, &dummy), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, atomic_fetch_add_acquire(1, &dummy), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, atomic_fetch_add_release(1, &dummy), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE, atomic_fetch_add_relaxed(1, &dummy), false);
+
+	/* compound */
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, smp_mb(), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, smp_wmb(), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, smp_rmb(), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, smp_mb__before_atomic(), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, smp_mb__after_atomic(), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, smp_store_mb(test_sink, 0), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, smp_load_acquire(&test_sink), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, smp_store_release(&test_sink, 0), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, xchg(&test_sink, 0), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, xchg_release(&test_sink, 0), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, xchg_relaxed(&test_sink, 0), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, cmpxchg(&test_sink, 0,  0), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, cmpxchg_release(&test_sink, 0,  0), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, cmpxchg_relaxed(&test_sink, 0,  0), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, atomic_read(&dummy), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, atomic_read_acquire(&dummy), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, atomic_set(&dummy, 0), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, atomic_set_release(&dummy, 0), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, atomic_add(1, &dummy), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, atomic_add_return(1, &dummy), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, atomic_add_return_acquire(1, &dummy), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, atomic_add_return_release(1, &dummy), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, atomic_add_return_relaxed(1, &dummy), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, atomic_fetch_add(1, &dummy), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, atomic_fetch_add_acquire(1, &dummy), false);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, atomic_fetch_add_release(1, &dummy), true);
+	KCSAN_EXPECT_BARRIER(KCSAN_ACCESS_WRITE | KCSAN_ACCESS_COMPOUND, atomic_fetch_add_relaxed(1, &dummy), false);
+
+#undef KCSAN_EXPECT_BARRIER
+}
 
 /* Simple test with normal data race. */
 __no_kcsan
@@ -1039,6 +1201,90 @@ static void test_1bit_value_change(struct kunit *test)
 		KUNIT_EXPECT_TRUE(test, match);
 }
 
+__no_kcsan
+static void test_correct_barrier(struct kunit *test)
+{
+	struct expect_report expect = {
+		.access = {
+			{ test_kernel_with_memorder, &test_var, sizeof(test_var), __KCSAN_ACCESS_RW(KCSAN_ACCESS_WRITE) },
+			{ test_kernel_with_memorder, &test_var, sizeof(test_var), __KCSAN_ACCESS_RW(0) },
+		},
+	};
+	bool match_expect = false;
+
+	test_struct.val[0] = 0; /* init unlocked */
+	begin_test_checks(test_kernel_with_memorder, test_kernel_with_memorder);
+	do {
+		match_expect = report_matches_any_reordered(&expect);
+	} while (!end_test_checks(match_expect));
+	KUNIT_EXPECT_FALSE(test, match_expect);
+}
+
+__no_kcsan
+static void test_missing_barrier(struct kunit *test)
+{
+	struct expect_report expect = {
+		.access = {
+			{ test_kernel_wrong_memorder, &test_var, sizeof(test_var), __KCSAN_ACCESS_RW(KCSAN_ACCESS_WRITE) },
+			{ test_kernel_wrong_memorder, &test_var, sizeof(test_var), __KCSAN_ACCESS_RW(0) },
+		},
+	};
+	bool match_expect = false;
+
+	test_struct.val[0] = 0; /* init unlocked */
+	begin_test_checks(test_kernel_wrong_memorder, test_kernel_wrong_memorder);
+	do {
+		match_expect = report_matches_any_reordered(&expect);
+	} while (!end_test_checks(match_expect));
+	if (IS_ENABLED(CONFIG_KCSAN_STRICT))
+		KUNIT_EXPECT_TRUE(test, match_expect);
+	else
+		KUNIT_EXPECT_FALSE(test, match_expect);
+}
+
+__no_kcsan
+static void test_atomic_builtins_correct_barrier(struct kunit *test)
+{
+	struct expect_report expect = {
+		.access = {
+			{ test_kernel_atomic_builtin_with_memorder, &test_var, sizeof(test_var), __KCSAN_ACCESS_RW(KCSAN_ACCESS_WRITE) },
+			{ test_kernel_atomic_builtin_with_memorder, &test_var, sizeof(test_var), __KCSAN_ACCESS_RW(0) },
+		},
+	};
+	bool match_expect = false;
+
+	test_struct.val[0] = 0; /* init unlocked */
+	begin_test_checks(test_kernel_atomic_builtin_with_memorder,
+			  test_kernel_atomic_builtin_with_memorder);
+	do {
+		match_expect = report_matches_any_reordered(&expect);
+	} while (!end_test_checks(match_expect));
+	KUNIT_EXPECT_FALSE(test, match_expect);
+}
+
+__no_kcsan
+static void test_atomic_builtins_missing_barrier(struct kunit *test)
+{
+	struct expect_report expect = {
+		.access = {
+			{ test_kernel_atomic_builtin_wrong_memorder, &test_var, sizeof(test_var), __KCSAN_ACCESS_RW(KCSAN_ACCESS_WRITE) },
+			{ test_kernel_atomic_builtin_wrong_memorder, &test_var, sizeof(test_var), __KCSAN_ACCESS_RW(0) },
+		},
+	};
+	bool match_expect = false;
+
+	test_struct.val[0] = 0; /* init unlocked */
+	begin_test_checks(test_kernel_atomic_builtin_wrong_memorder,
+			  test_kernel_atomic_builtin_wrong_memorder);
+	do {
+		match_expect = report_matches_any_reordered(&expect);
+	} while (!end_test_checks(match_expect));
+	if (IS_ENABLED(CONFIG_KCSAN_STRICT))
+		KUNIT_EXPECT_TRUE(test, match_expect);
+	else
+		KUNIT_EXPECT_FALSE(test, match_expect);
+}
+
 /*
  * Generate thread counts for all test cases. Values generated are in interval
  * [2, 5] followed by exponentially increasing thread counts from 8 to 32.
@@ -1088,6 +1334,7 @@ static const void *nthreads_gen_params(const void *prev, char *desc)
 
 #define KCSAN_KUNIT_CASE(test_name) KUNIT_CASE_PARAM(test_name, nthreads_gen_params)
 static struct kunit_case kcsan_test_cases[] = {
+	KUNIT_CASE(test_barrier_nothreads),
 	KCSAN_KUNIT_CASE(test_basic),
 	KCSAN_KUNIT_CASE(test_concurrent_races),
 	KCSAN_KUNIT_CASE(test_novalue_change),
@@ -1112,6 +1359,10 @@ static struct kunit_case kcsan_test_cases[] = {
 	KCSAN_KUNIT_CASE(test_seqlock_noreport),
 	KCSAN_KUNIT_CASE(test_atomic_builtins),
 	KCSAN_KUNIT_CASE(test_1bit_value_change),
+	KCSAN_KUNIT_CASE(test_correct_barrier),
+	KCSAN_KUNIT_CASE(test_missing_barrier),
+	KCSAN_KUNIT_CASE(test_atomic_builtins_correct_barrier),
+	KCSAN_KUNIT_CASE(test_atomic_builtins_missing_barrier),
 	{},
 };
 
@@ -1176,6 +1427,9 @@ static int test_init(struct kunit *test)
 	observed.nlines = 0;
 	spin_unlock_irqrestore(&observed.lock, flags);
 
+	if (strstr(test->name, "nothreads"))
+		return 0;
+
 	if (!torture_init_begin((char *)test->name, 1))
 		return -EBUSY;
 
@@ -1217,6 +1471,9 @@ static void test_exit(struct kunit *test)
 {
 	struct task_struct **stop_thread;
 	int i;
+
+	if (strstr(test->name, "nothreads"))
+		return;
 
 	if (torture_cleanup_begin())
 		return;
