@@ -7,11 +7,11 @@ endif
 # that is not a function of syscall inputs. E.g. involuntary context switches.
 KCOV_INSTRUMENT := n
 
-# There are numerous data races here, however, most of them are due to plain accesses.
-# This would make it even harder for syzbot to find reproducers, because these
-# bugs trigger without specific input. Disable by default, but should re-enable
-# eventually.
+# Disable to avoid excessive noise and performance degradation. In strict mode,
+# partially enable to avoid some "races of unknown origin" and also obtain
+# correct memory barrier instrumentation implied by core sched functions.
 KCSAN_SANITIZE := n
+KCSAN_SANITIZE_core.o := $(CONFIG_KCSAN_STRICT)
 
 ifneq ($(CONFIG_SCHED_OMIT_FRAME_POINTER),y)
 # According to Alan Modra <alan@linuxcare.com.au>, the -fno-omit-frame-pointer is
