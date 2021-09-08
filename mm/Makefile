@@ -11,10 +11,10 @@ KCSAN_SANITIZE_kmemleak.o := n
 # These produce frequent data race reports: most of them are due to races on
 # the same word but accesses to different bits of that word. Re-enable KCSAN
 # for these when we have more consensus on what to do about them.
-KCSAN_SANITIZE_slab_common.o := n
-KCSAN_SANITIZE_slab.o := n
-KCSAN_SANITIZE_slub.o := n
-KCSAN_SANITIZE_page_alloc.o := n
+KCSAN_SANITIZE_slab_common.o := $(CONFIG_KCSAN_STRICT)
+KCSAN_SANITIZE_slab.o := $(CONFIG_KCSAN_STRICT)
+KCSAN_SANITIZE_slub.o := $(CONFIG_KCSAN_STRICT)
+KCSAN_SANITIZE_page_alloc.o := $(CONFIG_KCSAN_STRICT)
 
 # These files are disabled because they produce non-interesting and/or
 # flaky coverage that is not a function of syscall inputs. E.g. slab is out of
