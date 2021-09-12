@@ -11,11 +11,13 @@
 #include <linux/bug.h>
 #include <linux/debugfs.h>
 #include <linux/irq_work.h>
+#include <linux/jhash.h>
 #include <linux/kcsan-checks.h>
 #include <linux/kfence.h>
 #include <linux/kmemleak.h>
 #include <linux/list.h>
 #include <linux/lockdep.h>
+#include <linux/log2.h>
 #include <linux/memblock.h>
 #include <linux/moduleparam.h>
 #include <linux/random.h>
@@ -93,6 +95,18 @@ EXPORT_SYMBOL(__kfence_pool); /* Export for test modules. */
 static_assert(CONFIG_KFENCE_NUM_OBJECTS > 0);
 struct kfence_metadata kfence_metadata[CONFIG_KFENCE_NUM_OBJECTS];
 
+/*
+ * A lossy set of allocation stack traces: limits already covered allocations of
+ * the same source filling up the pool when close to fully utilized.
+ */
+#define ALLOC_STACK_SET_SIZE (1 << const_ilog2(CONFIG_KFENCE_NUM_OBJECTS))
+#define ALLOC_STACK_SET_MASK (ALLOC_STACK_SET_SIZE - 1)
+static u32 alloc_stack_set[ALLOC_STACK_SET_SIZE];
+/* Stack depth used to determine uniqueness of an allocation. */
+#define UNIQUE_ALLOC_STACK_DEPTH 8
+/* Pool usage threshold when already covered allocations are skipped. */
+#define SKIP_COVERED_THRESHOLD ((CONFIG_KFENCE_NUM_OBJECTS * 4) / 5)
+
 /* Freelist with available objects. */
 static struct list_head kfence_freelist = LIST_HEAD_INIT(kfence_freelist);
 static DEFINE_RAW_SPINLOCK(kfence_freelist_lock); /* Lock protecting freelist. */
@@ -114,6 +128,7 @@ enum kfence_counter_id {
 	KFENCE_COUNTER_BUGS,
 	KFENCE_COUNTER_SKIP_INCOMPAT,
 	KFENCE_COUNTER_SKIP_CAPACITY,
+	KFENCE_COUNTER_SKIP_COVERED,
 	KFENCE_COUNTER_COUNT,
 };
 static atomic_long_t counters[KFENCE_COUNTER_COUNT];
@@ -125,10 +140,20 @@ static const char *const counter_names[] = {
 	[KFENCE_COUNTER_BUGS]		= "total bugs",
 	[KFENCE_COUNTER_SKIP_INCOMPAT]	= "skipped allocations (incompatible)",
 	[KFENCE_COUNTER_SKIP_CAPACITY]	= "skipped allocations (capacity)",
+	[KFENCE_COUNTER_SKIP_COVERED]	= "skipped allocations (covered)",
 };
 static_assert(ARRAY_SIZE(counter_names) == KFENCE_COUNTER_COUNT);
 
 /* === Internals ============================================================ */
+
+static u32 get_alloc_stack_hash(void)
+{
+	unsigned long stack_entries[UNIQUE_ALLOC_STACK_DEPTH];
+	size_t num_entries;
+
+	num_entries = stack_trace_save(stack_entries, UNIQUE_ALLOC_STACK_DEPTH, 1);
+	return jhash(stack_entries, num_entries * sizeof(stack_entries[0]), 0);
+}
 
 static bool kfence_protect(unsigned long addr)
 {
@@ -740,6 +765,8 @@ void kfence_shutdown_cache(struct kmem_cache *s)
 
 void *__kfence_alloc(struct kmem_cache *s, size_t size, gfp_t flags)
 {
+	u32 *alloc_stack_bucket = NULL;
+	u32 alloc_stack_hash;
 	void *ret;
 
 	/*
@@ -786,7 +813,27 @@ void *__kfence_alloc(struct kmem_cache *s, size_t size, gfp_t flags)
 	if (!READ_ONCE(kfence_enabled))
 		return NULL;
 
+	/*
+	 * Do expensive check for coverage of allocation in slow-path after
+	 * allocation_gate has already become non-zero, even though it might
+	 * mean not making any allocation within a given sample interval.
+	 *
+	 * This ensures reasonable allocation coverage when the pool is almost
+	 * full, including avoiding long-lived allocations of the same source
+	 * filling up the pool (e.g. pagecache allocations).
+	 */
+	if (atomic_long_read(&counters[KFENCE_COUNTER_ALLOCATED]) > SKIP_COVERED_THRESHOLD) {
+		alloc_stack_hash = get_alloc_stack_hash();
+		alloc_stack_bucket = &alloc_stack_set[alloc_stack_hash & ALLOC_STACK_SET_MASK];
+		if (READ_ONCE(*alloc_stack_bucket) == alloc_stack_hash) {
+			atomic_long_inc(&counters[KFENCE_COUNTER_SKIP_COVERED]);
+			return NULL;
+		}
+	}
+
 	ret = kfence_guarded_alloc(s, size, flags);
+	if (ret && alloc_stack_bucket)
+		WRITE_ONCE(*alloc_stack_bucket, alloc_stack_hash);
 
 	if (!ret)
 		atomic_long_inc(&counters[KFENCE_COUNTER_SKIP_CAPACITY]);
