@@ -37,6 +37,26 @@
 void __kcsan_check_access(const volatile void *ptr, size_t size, int type);
 
 /**
+ * __kcsan_mb - full memory barrier instrumentation
+ */
+void __kcsan_mb(void);
+
+/**
+ * __kcsan_wmb - write memory barrier instrumentation
+ */
+void __kcsan_wmb(void);
+
+/**
+ * __kcsan_rmb - read memory barrier instrumentation
+ */
+void __kcsan_rmb(void);
+
+/**
+ * __kcsan_release - release barrier instrumentation
+ */
+void __kcsan_release(void);
+
+/**
  * kcsan_disable_current - disable KCSAN for the current context
  *
  * Supports nesting.
@@ -159,6 +179,10 @@ void kcsan_end_scoped_access(struct kcsan_scoped_access *sa);
 static inline void __kcsan_check_access(const volatile void *ptr, size_t size,
 					int type) { }
 
+static inline void __kcsan_mb(void)			{ }
+static inline void __kcsan_wmb(void)			{ }
+static inline void __kcsan_rmb(void)			{ }
+static inline void __kcsan_release(void)		{ }
 static inline void kcsan_disable_current(void)		{ }
 static inline void kcsan_enable_current(void)		{ }
 static inline void kcsan_enable_current_nowarn(void)	{ }
@@ -184,6 +208,10 @@ static inline void kcsan_end_scoped_access(struct kcsan_scoped_access *sa) { }
  * instrumentation enabled. May be used in header files.
  */
 #define kcsan_check_access __kcsan_check_access
+#define kcsan_mb	__kcsan_mb
+#define kcsan_wmb	__kcsan_wmb
+#define kcsan_rmb	__kcsan_rmb
+#define kcsan_release	__kcsan_release
 
 /*
  * Only use these to disable KCSAN for accesses in the current compilation unit;
@@ -194,6 +222,10 @@ static inline void kcsan_end_scoped_access(struct kcsan_scoped_access *sa) { }
 #else
 static inline void kcsan_check_access(const volatile void *ptr, size_t size,
 				      int type) { }
+static inline void kcsan_mb(void)		{ }
+static inline void kcsan_wmb(void)		{ }
+static inline void kcsan_rmb(void)		{ }
+static inline void kcsan_release(void)		{ }
 static inline void __kcsan_enable_current(void)  { }
 static inline void __kcsan_disable_current(void) { }
 #endif
