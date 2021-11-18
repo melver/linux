@@ -181,7 +181,9 @@ struct task_struct init_task
 	.kasan_depth	= 1,
 #endif
 #ifdef CONFIG_KCSAN
-	.kcsan_ctx = { .scoped_accesses = {LIST_POISON1, NULL} },
+	.kcsan_ctx = {
+		.scoped_accesses	= {LIST_POISON1, NULL},
+	},
 #endif
 #ifdef CONFIG_TRACE_IRQFLAGS
 	.softirqs_enabled = 1,
