@@ -675,6 +675,7 @@ typedef struct {
  */
 static __always_inline unsigned raw_read_seqcount_latch(const seqcount_latch_t *s)
 {
+	kcsan_atomic_next(KCSAN_SEQLOCK_REGION_MAX);
 	/*
 	 * Pairs with the first smp_wmb() in raw_write_seqcount_latch().
 	 * Due to the dependent load, a full smp_rmb() is not needed.
@@ -779,6 +780,14 @@ raw_read_seqcount_latch_retry(const seqcount_latch_t *s, unsigned start)
  */
 static inline void raw_write_seqcount_latch(seqcount_latch_t *s)
 {
+	/*
+	 * Latch writers do not have a well-defined critical section, but to
+	 * avoid most false positives, at the cost of some false negatives,
+	 * generously assume the next KCSAN_SEQLOCK_REGION_MAX memory accesses
+	 * belong to the writer.
+	 */
+	kcsan_atomic_next(KCSAN_SEQLOCK_REGION_MAX);
+
 	smp_wmb();	/* prior stores before incrementing "sequence" */
 	s->seqcount.sequence++;
 	smp_wmb();      /* increment "sequence" before following stores */
