@@ -722,3 +722,33 @@ void kcsan_report_unknown_origin(const volatile void *ptr, size_t size, int acce
 	lockdep_on();
 	kcsan_enable_current();
 }
+
+noinline void kcsan_report_unaligned_atomic(const volatile void *ptr, size_t size, int access_type)
+{
+	unsigned long ua_flags = user_access_save();
+	unsigned long stack_entries[NUM_STACK_ENTRIES] = { 0 };
+	int num_stack_entries = stack_trace_save(stack_entries, NUM_STACK_ENTRIES, 1);
+	int skipnr = sanitize_stack_entries(stack_entries, num_stack_entries, 0, NULL);
+	unsigned long this_frame = stack_entries[skipnr];
+	unsigned long flags;
+
+	kcsan_disable_current();
+	lockdep_off(); /* See kcsan_report_known_origin(). */
+
+	raw_spin_lock_irqsave(&report_lock, flags);
+
+	report_header();
+	pr_err("BUG: KCSAN: unaligned atomic in %pS\n\n", (void *)this_frame);
+	pr_err("unaligned %s to 0x%px of %zu bytes:\n", get_access_type(access_type), ptr, size);
+	stack_trace_print(stack_entries + skipnr, num_stack_entries - skipnr, 0);
+	if (IS_ENABLED(CONFIG_KCSAN_VERBOSE))
+		print_verbose_info(current);
+	report_footer();
+
+	raw_spin_unlock_irqrestore(&report_lock, flags);
+
+	lockdep_on();
+	kcsan_enable_current();
+
+	user_access_restore(ua_flags);
+}

@@ -139,4 +139,10 @@ void kcsan_report_known_origin(const volatile void *ptr, size_t size, int access
 void kcsan_report_unknown_origin(const volatile void *ptr, size_t size, int access_type,
 				 unsigned long ip, u64 old, u64 new, u64 mask);
 
+
+/*
+ * Report an unaligned atomic access.
+ */
+void kcsan_report_unaligned_atomic(const volatile void *ptr, size_t size, int access_type);
+
 #endif /* _KERNEL_KCSAN_KCSAN_H */

@@ -755,8 +755,15 @@ again:
 		}
 
 		if (!(type & KCSAN_ACCESS_SCOPED)) {
-			struct kcsan_scoped_access *reorder_access = get_reorder_access(ctx);
+			struct kcsan_scoped_access *reorder_access;
 
+			if (IS_ENABLED(CONFIG_KCSAN_DETECT_UNALIGNED_ATOMICS) &&
+			    unlikely((type & KCSAN_ACCESS_ATOMIC) && !IS_ALIGNED((unsigned long)ptr, size))) {
+				kcsan_report_unaligned_atomic(ptr, size, type);
+				return;
+			}
+
+			reorder_access = get_reorder_access(ctx);
 			if (reorder_access) {
 				/*
 				 * reorder_access check: simulates reordering of

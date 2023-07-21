@@ -254,4 +254,14 @@ config KCSAN_PERMISSIVE
 	  to further reduce reported data races due to data-racy patterns
 	  common across the kernel.
 
+config KCSAN_DETECT_UNALIGNED_ATOMICS
+	bool "Detect unaligned atomic accesses"
+	help
+	  Detect unaligned atomic accesses. Such accesses may negatively affect
+	  performance, or cause kernel crashes on different architectures.
+
+	  Since KCSAN already instruments all memory accesses and distinguishes
+	  between atomic and non-atomic ones, KCSAN can implement a simple
+	  dynamic detector of unaligned atomic accesses.
+
 endif # KCSAN

@@ -117,10 +117,13 @@ static void probe_console(void *ignore, const char *buf, size_t len)
 		 */
 		strscpy(observed.lines[0], buf, min(len + 1, sizeof(observed.lines[0])));
 		nlines = 1;
-	} else if ((nlines == 1 || nlines == 2) && strnstr(buf, "bytes by", len)) {
+	} else if ((nlines == 1 || nlines == 2) &&
+		   (strnstr(buf, "bytes by", len) ||
+		    strnstr(buf, "bytes:", len))) {
 		strscpy(observed.lines[nlines++], buf, min(len + 1, sizeof(observed.lines[0])));
 
-		if (strnstr(buf, "race at unknown origin", len)) {
+		if (strnstr(buf, "race at unknown origin", len) ||
+		    strnstr(buf, "unaligned", len)) {
 			if (WARN_ON(nlines != 2))
 				goto out;
 
@@ -706,6 +709,28 @@ static void test_barrier_nothreads(struct kunit *test)
 	KCSAN_EXPECT_RW_BARRIER(clear_bit_unlock_is_negative_byte(0, &test_var), true);
 #endif
 	kcsan_nestable_atomic_end();
+}
+
+static void test_unaligned_atomic_nothreads(struct kunit *test)
+{
+	__aligned(8) char bytes[8] = {};
+	atomic_t *aligned_var = (atomic_t *)&bytes[0];
+	atomic_t *unaligned_var = (atomic_t *)&bytes[1];
+
+	BUILD_BUG_ON(sizeof(atomic_t) > sizeof(bytes) - 1);
+
+	/*
+	 * Only enable this test on configurations that will not result in
+	 * kernel panic through other checks.
+	 */
+	if (!IS_ENABLED(CONFIG_X86))
+		kunit_skip(test, "Unaligned atomic access may fault");
+
+	KUNIT_EXPECT_FALSE(test, report_available());
+	atomic_fetch_add(1, aligned_var);
+	KUNIT_EXPECT_FALSE(test, report_available());
+	atomic_fetch_add(1, unaligned_var);
+	KUNIT_EXPECT_TRUE(test, report_available());
 }
 
 /* Simple test with normal data race. */
@@ -1414,6 +1439,7 @@ static const void *nthreads_gen_params(const void *prev, char *desc)
 #define KCSAN_KUNIT_CASE(test_name) KUNIT_CASE_PARAM(test_name, nthreads_gen_params)
 static struct kunit_case kcsan_test_cases[] = {
 	KUNIT_CASE(test_barrier_nothreads),
+	KUNIT_CASE(test_unaligned_atomic_nothreads),
 	KCSAN_KUNIT_CASE(test_basic),
 	KCSAN_KUNIT_CASE(test_concurrent_races),
 	KCSAN_KUNIT_CASE(test_novalue_change),
