@@ -1102,6 +1102,7 @@ static const char *uaccess_safe_builtin[] = {
 	"kcsan_check_scoped_accesses",
 	"kcsan_disable_current",
 	"kcsan_enable_current_nowarn",
+	"kcsan_report_unaligned_atomic",
 	/* KCSAN/TSAN */
 	"__tsan_func_entry",
 	"__tsan_func_exit",
