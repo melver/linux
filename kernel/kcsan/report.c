@@ -385,6 +385,21 @@ static void print_verbose_info(struct task_struct *task)
 	print_irqtrace_events(task);
 }
 
+static void report_header()
+{
+	pr_err("==================================================================\n");
+}
+
+static void report_footer()
+{
+	pr_err("\n");
+	pr_err("Reported by Kernel Concurrency Sanitizer on:\n");
+	dump_stack_print_info(KERN_DEFAULT);
+	pr_err("==================================================================\n");
+
+	check_panic_on_warn("KCSAN");
+}
+
 static void print_report(enum kcsan_value_change value_change,
 			 const struct access_info *ai,
 			 struct other_info *other_info,
@@ -419,8 +434,8 @@ static void print_report(enum kcsan_value_change value_change,
 	if (rate_limit_report(this_frame, other_frame))
 		return;
 
-	/* Print report header. */
-	pr_err("==================================================================\n");
+	report_header();
+
 	if (other_info) {
 		int cmp;
 
@@ -486,13 +501,7 @@ static void print_report(enum kcsan_value_change value_change,
 		}
 	}
 
-	/* Print report footer. */
-	pr_err("\n");
-	pr_err("Reported by Kernel Concurrency Sanitizer on:\n");
-	dump_stack_print_info(KERN_DEFAULT);
-	pr_err("==================================================================\n");
-
-	check_panic_on_warn("KCSAN");
+	report_footer();
 }
 
 static void release_report(unsigned long *flags, struct other_info *other_info)
