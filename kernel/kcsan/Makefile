@@ -10,6 +10,7 @@ CFLAGS_REMOVE_report.o = $(CC_FLAGS_FTRACE)
 CFLAGS_core.o := $(call cc-option,-fno-conserve-stack) \
 	$(call cc-option,-mno-outline-atomics) \
 	-fno-stack-protector -DDISABLE_BRANCH_PROFILING
+CFLAGS_report.o := -fno-stack-protector -DDISABLE_BRANCH_PROFILING
 
 obj-y := core.o debugfs.o report.o
 
