@@ -2484,6 +2484,10 @@ void bpf_dynptr_init(struct bpf_dynptr_kern *ptr, void *data,
 void bpf_dynptr_set_null(struct bpf_dynptr_kern *ptr);
 void bpf_dynptr_set_rdonly(struct bpf_dynptr_kern *ptr);
 
+int bpf_user_writable_register(void __user *start, size_t size, u32 tag);
+int bpf_user_writable_unregister(void __user *start, size_t size);
+void bpf_user_writable_free(struct task_struct *t);
+
 bool dev_check_flush(void);
 bool cpu_map_check_flush(void);
 #else /* !CONFIG_BPF_SYSCALL */
@@ -2734,6 +2738,20 @@ static inline void bpf_dynptr_set_null(struct bpf_dynptr_kern *ptr)
 }
 
 static inline void bpf_dynptr_set_rdonly(struct bpf_dynptr_kern *ptr)
+{
+}
+
+int bpf_user_writable_register(void __user *start, size_t size, u32 tag)
+{
+	return -EOPNOTSUPP;
+}
+
+int bpf_user_writable_unregister(void __user *start, size_t size)
+{
+	return -EOPNOTSUPP;
+}
+
+void bpf_user_writable_free(struct task_struct *t)
 {
 }
 #endif /* CONFIG_BPF_SYSCALL */

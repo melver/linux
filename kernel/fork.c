@@ -624,6 +624,7 @@ void free_task(struct task_struct *tsk)
 	if (tsk->flags & PF_KTHREAD)
 		free_kthread_struct(tsk);
 	bpf_task_storage_free(tsk);
+	bpf_user_writable_free(tsk);
 	free_task_struct(tsk);
 }
 EXPORT_SYMBOL(free_task);
@@ -2466,6 +2467,7 @@ __latent_entropy struct task_struct *copy_process(
 #ifdef CONFIG_BPF_SYSCALL
 	RCU_INIT_POINTER(p->bpf_storage, NULL);
 	p->bpf_ctx = NULL;
+	p->bpf_user_writable = NULL;
 #endif
 
 	/* Perform scheduler related setup. Assign this task to a CPU. */

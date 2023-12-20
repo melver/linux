@@ -64,6 +64,7 @@
 #include <linux/io_uring.h>
 #include <linux/syscall_user_dispatch.h>
 #include <linux/coredump.h>
+#include <linux/bpf.h>
 #include <linux/time_namespace.h>
 #include <linux/user_events.h>
 
@@ -1863,6 +1864,7 @@ static int bprm_execve(struct linux_binprm *bprm,
 	user_events_execve(current);
 	acct_update_integrals(current);
 	task_numa_free(current, false);
+	bpf_user_writable_free(current);
 	return retval;
 
 out:

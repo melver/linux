@@ -35,6 +35,7 @@
 #include <linux/task_io_accounting_ops.h>
 #include <linux/seccomp.h>
 #include <linux/cpu.h>
+#include <linux/bpf.h>
 #include <linux/personality.h>
 #include <linux/ptrace.h>
 #include <linux/fs_struct.h>
@@ -2742,6 +2743,12 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 		break;
 	case PR_RISCV_V_GET_CONTROL:
 		error = RISCV_V_GET_CONTROL();
+		break;
+	case PR_BPF_REGISTER_WRITABLE:
+		error = bpf_user_writable_register((void __user *)arg2, arg3, arg4);
+		break;
+	case PR_BPF_UNREGISTER_WRITABLE:
+		error = bpf_user_writable_unregister((void __user *)arg2, arg3);
 		break;
 	default:
 		error = -EINVAL;
